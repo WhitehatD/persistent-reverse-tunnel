@@ -1,0 +1,348 @@
+# 🔗 Persistent Reverse SSH Tunnel
+
+**Enterprise-grade, self-healing reverse SSH tunnel for NAT-restricted environments.**
+
+Access your home machine from anywhere — even behind ISP firewalls, double NAT, or building-managed modems that block port forwarding — by routing through a cloud VPS.
+
+[![OS](https://img.shields.io/badge/OS-Windows%2011-0078D6?style=for-the-badge&logo=windows11)](https://www.microsoft.com/windows)
+[![SSH](https://img.shields.io/badge/Protocol-OpenSSH-231F20?style=for-the-badge&logo=openssh)](https://www.openssh.com/)
+[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
+
+---
+
+## The Problem
+
+```
+You                    Building Modem              Your Laptop
+(Phone/Remote PC) --X--> [NAT / No Port Forward] --|--> Can't reach it
+```
+
+Many residential and commercial ISPs place customers behind **carrier-grade NAT (CGNAT)** or building-managed routers that **do not allow port forwarding**. This makes it impossible to SSH into your home machine from outside.
+
+## The Solution
+
+Flip the direction. Your laptop initiates an **outbound** SSH connection to a VPS you control, and opens a **reverse tunnel** that the VPS exposes as a port. You then SSH into the VPS port, which routes through the tunnel to your laptop.
+
+```
+You (anywhere) --> VPS:2222 --[reverse tunnel]--> Laptop:22 ✓
+```
+
+No port forwarding required. No firewall changes. Works on any internet connection.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph INTERNET["☁️ Internet"]
+        direction TB
+        PHONE["📱 Phone<br/><small>Termius / JuiceSSH</small>"]
+        REMOTE["💻 Remote PC"]
+    end
+
+    subgraph VPS["🖥️ Cloud VPS"]
+        direction TB
+        SSHD_VPS["OpenSSH Server<br/><small>Port 22 (management)</small><br/><small>Port 2222 (tunnel)</small>"]
+        FW["Firewall<br/><small>UFW / iptables</small>"]
+    end
+
+    subgraph HOME["🏠 Behind NAT"]
+        direction TB
+        MODEM["🚫 Building Modem<br/><small>No port forwarding</small>"]
+        LAPTOP["💻 Laptop<br/><small>OpenSSH Server on :22</small>"]
+        TUNNEL_SVC["🔄 Tunnel Service<br/><small>Task Scheduler</small>"]
+    end
+
+    PHONE -->|"ssh -p 2222<br/>user@vps-ip"| SSHD_VPS
+    REMOTE -->|"ssh -p 2222<br/>user@vps-ip"| SSHD_VPS
+    SSHD_VPS <-->|"Reverse Tunnel<br/>VPS:2222 ↔ Laptop:22"| MODEM
+    MODEM <--> LAPTOP
+    TUNNEL_SVC -->|"Outbound SSH<br/>(always-on)"| MODEM
+    TUNNEL_SVC -.->|manages| LAPTOP
+
+    style INTERNET fill:#1a1a2e,stroke:#16213e,color:#eee
+    style VPS fill:#0f3460,stroke:#533483,color:#eee
+    style HOME fill:#1a1a2e,stroke:#e94560,color:#eee
+    style MODEM fill:#e94560,stroke:#e94560,color:#fff
+    style PHONE fill:#533483,stroke:#533483,color:#fff
+    style REMOTE fill:#533483,stroke:#533483,color:#fff
+    style SSHD_VPS fill:#0f3460,stroke:#00d2ff,color:#eee
+    style LAPTOP fill:#16213e,stroke:#00d2ff,color:#eee
+    style TUNNEL_SVC fill:#16213e,stroke:#00ff88,color:#eee
+    style FW fill:#0f3460,stroke:#ff6600,color:#eee
+```
+
+---
+
+## Connection Flow
+
+```mermaid
+sequenceDiagram
+    participant L as 💻 Laptop
+    participant M as 🚫 Modem (NAT)
+    participant V as 🖥️ VPS
+    participant P as 📱 Phone
+
+    Note over L: Tunnel service starts<br/>(boot / logon)
+
+    L->>M: Outbound SSH (port 22)
+    M->>V: Passes through NAT ✓
+    V-->>V: Binds port 2222<br/>→ reverse tunnel
+
+    Note over L,V: 🔗 Tunnel established
+
+    loop Every 15 seconds
+        L->>V: ServerAlive keepalive
+        V-->>L: ServerAlive reply
+    end
+
+    P->>V: ssh -p 2222 user@vps-ip
+    V->>L: Routes through tunnel
+    L-->>V: Shell session data
+    V-->>P: Shell session data
+
+    Note over P: Full shell access ✓
+
+    rect rgb(80, 20, 20)
+        Note over L,V: ⚠️ Connection drops
+        V--xL: Timeout (3 missed keepalives)
+        L->>L: Detect failure, backoff 5s
+        L->>M: Reconnect SSH
+        M->>V: Re-establish tunnel
+        Note over L,V: 🔗 Tunnel restored
+    end
+```
+
+---
+
+## Reconnection & Self-Healing
+
+```mermaid
+stateDiagram-v2
+    [*] --> Connecting: Service starts
+
+    Connecting --> Connected: SSH handshake OK
+    Connecting --> Backoff: Connection failed
+
+    Connected --> Monitoring: Tunnel bound on VPS
+
+    Monitoring --> Connected: Keepalive OK (every 15s)
+    Monitoring --> Disconnected: 3 missed keepalives
+
+    Disconnected --> Backoff: SSH process exits
+
+    Backoff --> Connecting: Wait expires
+
+    state Backoff {
+        [*] --> 5s
+        5s --> 10s: Still failing
+        10s --> 20s: Still failing
+        20s --> 40s: Still failing
+        40s --> 60s_cap: Still failing
+        60s_cap --> 60s_cap: Max backoff
+    }
+
+    note right of Monitoring
+        Stable > 5 min
+        resets backoff to 5s
+    end note
+
+    note right of Connected
+        ExitOnForwardFailure=yes
+        prevents silent binding failures
+    end note
+```
+
+---
+
+## Components
+
+### 1. VPS — SSH Server Configuration
+
+The VPS SSH daemon is configured to support reverse tunnels with keepalive detection.
+
+```
+# /etc/ssh/sshd_config.d/tunnel.conf
+GatewayPorts yes              # Allow remote port binding
+AllowTcpForwarding yes        # Permit tunnel forwarding
+ClientAliveInterval 30        # Check client every 30s
+ClientAliveCountMax 3         # Drop after 3 misses (90s)
+```
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `GatewayPorts` | `yes` | Allows the reverse-bound port to accept connections from any interface |
+| `AllowTcpForwarding` | `yes` | Permits `-R` and `-L` tunnel flags |
+| `ClientAliveInterval` | `30` | Server-side keepalive every 30 seconds |
+| `ClientAliveCountMax` | `3` | Drops dead connections after 90s of silence |
+
+### 2. Laptop — OpenSSH Server
+
+Windows 11's built-in OpenSSH Server accepts incoming connections through the tunnel.
+
+```
+# Installed via Windows capability
+OpenSSH.Server~~~~0.0.1.0
+
+# Service: sshd
+# StartType: Automatic
+# Auth: Public key (administrators_authorized_keys)
+```
+
+### 3. Laptop — Tunnel Service
+
+A PowerShell script managed by **Windows Task Scheduler** maintains the reverse tunnel.
+
+```
+SSH Tunnel Process
+├── Connection: ssh -N -R 2222:localhost:22 vps-user@vps-ip
+├── Keepalive: ServerAliveInterval=15, ServerAliveCountMax=3
+├── Safety: ExitOnForwardFailure=yes, BatchMode=yes
+├── Reconnect: Exponential backoff (5s → 60s cap)
+└── Logging: tunnel.log with timestamps
+```
+
+**Task Scheduler Configuration:**
+
+| Property | Value |
+|----------|-------|
+| Trigger | At startup + At logon |
+| Run as | Current user (S4U — no stored password) |
+| Run level | Highest privileges |
+| Battery | Runs on battery, doesn't stop on switch |
+| Restart | Up to 999 retries, 1-minute interval |
+| Time limit | Unlimited (no execution timeout) |
+| Window | Hidden (no console window) |
+
+### 4. Key Authentication Chain
+
+```mermaid
+flowchart LR
+    subgraph LAPTOP["Laptop"]
+        LK["~/.ssh/id_rsa<br/><small>Private Key</small>"]
+    end
+
+    subgraph VPS["VPS"]
+        VA["~/.ssh/authorized_keys<br/><small>Laptop's public key</small>"]
+        VK["~/.ssh/id_tunnel<br/><small>Tunnel keypair</small>"]
+    end
+
+    subgraph LAPTOP_SSHD["Laptop SSHD"]
+        LA["administrators_authorized_keys<br/><small>VPS tunnel public key</small>"]
+    end
+
+    LK -->|"Authenticates outbound tunnel"| VA
+    VK -->|"Authenticates inbound sessions"| LA
+
+    style LAPTOP fill:#16213e,stroke:#00d2ff,color:#eee
+    style VPS fill:#0f3460,stroke:#533483,color:#eee
+    style LAPTOP_SSHD fill:#16213e,stroke:#00ff88,color:#eee
+```
+
+**Two separate key pairs — no shared secrets:**
+- **Laptop → VPS:** Laptop's RSA key authenticates the outbound tunnel connection
+- **VPS → Laptop:** VPS's Ed25519 tunnel key authenticates inbound sessions through the tunnel
+
+---
+
+## Usage
+
+### Connect from your phone
+
+```bash
+ssh -p 2222 user@<vps-ip>
+```
+
+Use any mobile SSH client (Termius, JuiceSSH, Blink Shell). You'll land directly on your laptop's shell.
+
+### Check tunnel status
+
+```powershell
+# View logs
+Get-Content C:\Users\<user>\ssh-tunnel\tunnel.log -Tail 20
+
+# Check if the task is running
+Get-ScheduledTask -TaskName "SSH-Reverse-Tunnel" | Select TaskName, State
+
+# Restart the tunnel
+Restart-ScheduledTask -TaskName "SSH-Reverse-Tunnel"
+```
+
+### Verify from VPS
+
+```bash
+# Check if tunnel port is listening
+ss -tlnp | grep 2222
+
+# Test connection through tunnel
+ssh -i ~/.ssh/id_tunnel -p 2222 user@localhost
+```
+
+---
+
+## Security Considerations
+
+| Layer | Protection |
+|-------|-----------|
+| **Authentication** | Public key only — no passwords |
+| **Key separation** | Dedicated tunnel keypair (not reused for other access) |
+| **Tunnel scope** | Only port 22 is forwarded (not a full VPN) |
+| **Keepalive** | Dead connections detected in < 90 seconds |
+| **Firewall** | VPS should restrict port 2222 to trusted source IPs if possible |
+| **Encryption** | All traffic AES-256-GCM encrypted end-to-end via SSH |
+| **No secrets in code** | All keys referenced by path, never embedded |
+
+### Hardening recommendations
+
+- Restrict VPS port 2222 to your known IPs via `ufw` / `iptables`
+- Use `fail2ban` on the VPS for brute-force protection
+- Rotate the tunnel keypair periodically
+- Monitor `tunnel.log` for unexpected disconnects
+- Consider adding MFA (TOTP) to the VPS SSH for interactive logins
+
+---
+
+## File Structure
+
+```
+laptop:
+├── ~/.ssh/id_rsa                              # Key for laptop → VPS auth
+├── C:\ProgramData\ssh\administrators_authorized_keys  # Accepted keys for inbound SSH
+└── ssh-tunnel/
+    ├── tunnel.ps1                             # Tunnel loop with reconnection logic
+    ├── install-service.ps1                    # Task Scheduler installer
+    └── tunnel.log                             # Runtime logs
+
+vps:
+├── ~/.ssh/authorized_keys                     # Accepts laptop's public key
+├── ~/.ssh/id_tunnel                           # Key for VPS → laptop auth
+├── ~/.ssh/id_tunnel.pub
+└── /etc/ssh/sshd_config.d/tunnel.conf         # Tunnel-specific SSH config
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Connection refused` on VPS:2222 | Tunnel not running | Check Task Scheduler status, review `tunnel.log` |
+| `Permission denied` through tunnel | Key not in `administrators_authorized_keys` | Re-add VPS tunnel pubkey, restart `sshd` |
+| Tunnel drops every few minutes | ISP or modem killing idle connections | `ServerAliveInterval=15` should prevent this; lower if needed |
+| Tunnel up but port not bound | Previous tunnel still holding the port | Kill stale SSH processes on VPS: `pkill -f "sshd.*2222"` |
+| High latency through tunnel | Double hop (you → VPS → laptop) | Expected — typically adds 20-50ms depending on VPS location |
+
+---
+
+## Requirements
+
+- **Laptop:** Windows 10/11 with OpenSSH Server capability
+- **VPS:** Any Linux server with a public IP and SSH access
+- **Network:** Any internet connection (works behind NAT, CGNAT, firewalls)
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
