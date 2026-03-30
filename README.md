@@ -190,6 +190,26 @@ OpenSSH.Server~~~~0.0.1.0
 # Auth: Public key (administrators_authorized_keys)
 ```
 
+#### Default Shell Configuration
+
+Windows OpenSSH defaults to CMD, which is unusable for development. To set Git Bash as the default SSH shell, use a `.cmd` wrapper — this is necessary because Windows OpenSSH passes `DefaultShellCommandOption` as a **single argument**, which breaks multi-flag options like `--login -i`.
+
+**Wrapper script** (`shell.cmd`):
+```cmd
+@"C:\Program Files\Git\bin\bash.exe" --login -i
+```
+
+**Registry setup** (run as Administrator):
+```powershell
+New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell -Value "C:\path\to\shell.cmd" -PropertyType String -Force
+Remove-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShellCommandOption -ErrorAction SilentlyContinue
+Restart-Service sshd
+```
+
+> **Why a wrapper?** Setting `DefaultShell` directly to `bash.exe` with `DefaultShellCommandOption` set to `--login -i` or `-l -c` fails — Windows OpenSSH concatenates the option as one string argument, and Bash rejects it. The `.cmd` wrapper passes the flags correctly as separate arguments.
+
+The `--login` flag makes Bash read `~/.bash_profile` on connect, where you can define aliases, set the default directory, and display a welcome message.
+
 ### 3. Laptop — Tunnel Service
 
 A PowerShell script managed by **Windows Task Scheduler** maintains the reverse tunnel.
@@ -375,10 +395,13 @@ ssh -i ~/.ssh/id_tunnel -p 2222 user@localhost
 ```
 laptop:
 ├── ~/.ssh/id_rsa                              # Key for laptop → VPS auth
+├── ~/.bash_profile                            # Login shell config (aliases, welcome)
 ├── C:\ProgramData\ssh\administrators_authorized_keys  # Accepted keys for inbound SSH
 └── ssh-tunnel/
     ├── tunnel.ps1                             # Tunnel loop with reconnection logic
     ├── install-service.ps1                    # Task Scheduler installer
+    ├── set-default-shell.ps1                  # Sets Git Bash as SSH default shell
+    ├── shell.cmd                              # Wrapper to launch bash --login -i
     └── tunnel.log                             # Runtime logs
 
 vps:
