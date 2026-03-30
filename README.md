@@ -271,7 +271,32 @@ flowchart LR
 
 ---
 
-## Mobile Access with Termius
+## Session Persistence
+
+Mobile SSH clients (Termius, JuiceSSH) lose connections when the app goes to background — iOS and Android suspend TCP sockets, and the server drops the session within 90 seconds. This kills any long-running process on the remote end.
+
+This project includes optional session persistence that solves this entirely. Sessions survive phone sleep, app kills, and network switches. Reconnecting reattaches to the exact same session — processes on the remote machine never notice the interruption.
+
+### Setup
+
+Run the installer on the VPS:
+```bash
+ssh root@<vps-ip> 'bash -s' < setup-phone-session.sh
+```
+
+Then update your mobile SSH client to connect on **port 22** (username `root`) instead of port 2222. The same key is used.
+
+### How it works
+
+The VPS acts as a session persistence layer between the phone and the laptop. The phone's connection is decoupled from the actual work session — disconnecting the phone doesn't affect the running processes.
+
+See `phone-session.sh` and `setup-phone-session.sh` for implementation details.
+
+---
+
+## Mobile Access with Termius (Direct)
+
+> **Note:** This method connects directly through the tunnel without persistence. Sessions will be lost if your phone goes to sleep. For persistent sessions, use the setup above.
 
 ### Step 1: Get the tunnel private key onto your phone
 
@@ -412,10 +437,12 @@ laptop:
     └── tunnel.log                             # Runtime logs (auto-rotated at 10MB)
 
 vps:
-├── ~/.ssh/authorized_keys                     # Accepts laptop's public key
+├── ~/.ssh/authorized_keys                     # Accepted keys (with optional forced commands)
 ├── ~/.ssh/id_tunnel                           # Key for VPS → laptop auth
 ├── ~/.ssh/id_tunnel.pub
-└── /etc/ssh/sshd_config.d/tunnel.conf         # Tunnel-specific SSH config
+├── /etc/ssh/sshd_config.d/tunnel.conf         # Tunnel-specific SSH config
+├── /root/phone-session.sh                     # Session persistence script
+└── /root/.tmux.conf                           # Terminal multiplexer config
 ```
 
 ---
@@ -432,6 +459,7 @@ vps:
 | Task starts and immediately exits (code 1) | S4U logon type has no network credentials | Use SYSTEM principal (see `install-service.ps1`) |
 | `UNPROTECTED PRIVATE KEY FILE` | Key permissions too open for SYSTEM | Run `install-service.ps1` — it copies the key with restricted ACLs |
 | PowerShell parse error under Task Scheduler | Script has LF line endings or backtick continuations | Avoid backtick `\`` continuations; use splatting and ensure UTF-8 BOM encoding |
+| Phone session dies when screen locks | No session persistence configured | Run `setup-phone-session.sh` and connect on port 22 (see Session Persistence) |
 
 ---
 
