@@ -279,18 +279,9 @@ This project includes optional session persistence that solves this entirely. Se
 
 ### Setup
 
-Run the installer on the VPS:
-```bash
-ssh root@<vps-ip> 'bash -s' < setup-phone-session.sh
-```
+Configure your VPS with a session persistence layer, then update your mobile SSH client to connect on **port 22** (username `root`) instead of port 2222. The same key is used.
 
-Then update your mobile SSH client to connect on **port 22** (username `root`) instead of port 2222. The same key is used.
-
-### How it works
-
-The VPS acts as a session persistence layer between the phone and the laptop. The phone's connection is decoupled from the actual work session — disconnecting the phone doesn't affect the running processes.
-
-See `phone-session.sh` and `setup-phone-session.sh` for implementation details.
+The VPS acts as an intermediary that decouples the phone's connection from the actual work session — disconnecting the phone doesn't affect running processes.
 
 ---
 
@@ -441,8 +432,7 @@ vps:
 ├── ~/.ssh/id_tunnel                           # Key for VPS → laptop auth
 ├── ~/.ssh/id_tunnel.pub
 ├── /etc/ssh/sshd_config.d/tunnel.conf         # Tunnel-specific SSH config
-├── /root/phone-session.sh                     # Session persistence script
-└── /root/.tmux.conf                           # Terminal multiplexer config
+└── /root/phone-session.sh                     # Session persistence (see private infra)
 ```
 
 ---
