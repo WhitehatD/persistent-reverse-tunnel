@@ -246,15 +246,82 @@ flowchart LR
 
 ---
 
-## Usage
+## Mobile Access with Termius
 
-### Connect from your phone
+### Step 1: Get the tunnel private key onto your phone
+
+The VPS tunnel private key (`id_tunnel`) must be imported into your phone's SSH client. The key lives on the VPS at `~/.ssh/id_tunnel`.
+
+**iPhone users — do NOT copy-paste the key.** iOS aggressively strips trailing whitespace from lines when copying from browsers and text views, which corrupts OpenSSH keys. Instead:
+
+1. **Email the key to yourself as a file attachment:**
+   - On your laptop, retrieve the key: `ssh root@<vps-ip> "cat ~/.ssh/id_tunnel" > tunnel-key.txt`
+   - Open your email client, compose to yourself, attach `tunnel-key.txt`, send
+   - On your phone, open the email and download the attachment
+
+2. **Or use AirDrop (macOS → iPhone)** or a cloud drive (Google Drive, OneDrive) to transfer the file
+
+3. **Or host it temporarily** on the VPS for 60 seconds:
+   ```bash
+   ssh root@<vps-ip> "cd /tmp && cp ~/.ssh/id_tunnel key.txt && python3 -m http.server 8888 &"
+   # Download on phone: http://<vps-ip>:8888/key.txt
+   # Then kill it:
+   ssh root@<vps-ip> "pkill -f 'http.server 8888' && rm /tmp/key.txt"
+   ```
+
+> **Why not copy-paste?** OpenSSH private keys are base64-encoded with strict line formatting. A single missing character or extra newline will cause `invalid format` errors. File transfer preserves the exact bytes.
+
+### Step 2: Import the key into Termius
+
+1. Open Termius → **Keychain** → tap **+** → **Key**
+2. Fill in:
+   | Field | Value |
+   |-------|-------|
+   | **Label** | `laptop-tunnel` |
+   | **Private Key** | Tap **Import from file** → select the downloaded key file |
+   | **Public Key** | Leave empty |
+   | **Passphrase** | Leave empty (key has no passphrase) |
+   | **Certificate** | Leave empty |
+3. Save
+
+> **Alternative:** If you must paste, tap the Private Key field → paste → carefully verify the first line reads exactly `-----BEGIN OPENSSH PRIVATE KEY-----` and the last line reads exactly `-----END OPENSSH PRIVATE KEY-----` with no extra spaces or missing characters.
+
+### Step 3: Create the host
+
+1. Tap **+** → **New Host**
+2. Fill in:
+   | Field | Value |
+   |-------|-------|
+   | **Alias** | `Laptop` (or any name) |
+   | **Hostname** | `<vps-ip>` |
+   | **Port** | `2222` |
+   | **Username** | `<your-laptop-username>` |
+   | **Password** | Leave empty |
+   | **Key** | Select `laptop-tunnel` from your keychain |
+
+   > **Important:** Make sure the connection type is **SSH**, not Telnet or Mosh.
+
+3. Save and tap the host to connect
+
+### Step 4: Troubleshoot if it doesn't connect
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| **Connection timeout** | VPS firewall blocking port 2222 | `ufw allow 2222/tcp` on VPS |
+| **Connection timeout** | Tunnel not running on laptop | Check Task Scheduler, restart tunnel |
+| **Connection timeout** | Phone on restricted WiFi | Switch to mobile data and retry |
+| **Connection refused** | Port 2222 not bound (tunnel down) | `ss -tlnp \| grep 2222` on VPS — if empty, tunnel is down |
+| **Permission denied** | Wrong key in Termius | Re-import key file, verify it's the VPS tunnel key (not the laptop key) |
+| **Permission denied** | Key not in laptop's authorized_keys | Add VPS tunnel public key to `administrators_authorized_keys` |
+| **Invalid key format** | Key was copy-pasted and corrupted | Re-import from file — never paste on iPhone |
+
+### Connect from a desktop SSH client
 
 ```bash
-ssh -p 2222 user@<vps-ip>
+ssh -p 2222 <user>@<vps-ip>
 ```
 
-Use any mobile SSH client (Termius, JuiceSSH, Blink Shell). You'll land directly on your laptop's shell.
+Works from any SSH client — PuTTY, Windows Terminal, macOS Terminal, Linux.
 
 ### Check tunnel status
 
