@@ -220,6 +220,9 @@ SSH Tunnel Process
 ├── Keepalive: ServerAliveInterval=15, ServerAliveCountMax=3
 ├── Safety: ExitOnForwardFailure=yes, BatchMode=yes
 ├── Reconnect: Exponential backoff (5s → 60s cap)
+├── Network wait: Polls VPS:22 for up to 120s on boot
+├── Log rotation: Auto-rotates at 10MB
+├── Diagnostics: SSH stderr captured per connection attempt
 └── Logging: tunnel.log with timestamps
 ```
 
@@ -227,13 +230,15 @@ SSH Tunnel Process
 
 | Property | Value |
 |----------|-------|
-| Trigger | At startup + At logon |
-| Run as | Current user (S4U — no stored password) |
+| Trigger | At startup (15-second delay for networking) |
+| Run as | `SYSTEM` (ServiceAccount — has network credentials, runs before login) |
 | Run level | Highest privileges |
 | Battery | Runs on battery, doesn't stop on switch |
 | Restart | Up to 999 retries, 1-minute interval |
 | Time limit | Unlimited (no execution timeout) |
 | Window | Hidden (no console window) |
+
+> **Why SYSTEM, not S4U?** The original design used `S4U` (Service-for-User) logon type, which runs without a stored password. However, S4U tokens **do not carry network credentials** — the SSH process cannot make outbound connections and dies immediately. SYSTEM has full network access and runs at boot before any user logs in.
 
 ### 4. Key Authentication Chain
 
@@ -399,10 +404,12 @@ laptop:
 ├── C:\ProgramData\ssh\administrators_authorized_keys  # Accepted keys for inbound SSH
 └── ssh-tunnel/
     ├── tunnel.ps1                             # Tunnel loop with reconnection logic
-    ├── install-service.ps1                    # Task Scheduler installer
+    ├── install-service.ps1                    # Task Scheduler installer (run as admin)
+    ├── keys/
+    │   └── id_rsa                             # Copy of SSH key with SYSTEM-only perms
     ├── set-default-shell.ps1                  # Sets Git Bash as SSH default shell
     ├── shell.cmd                              # Wrapper to launch bash --login -i
-    └── tunnel.log                             # Runtime logs
+    └── tunnel.log                             # Runtime logs (auto-rotated at 10MB)
 
 vps:
 ├── ~/.ssh/authorized_keys                     # Accepts laptop's public key
@@ -422,6 +429,9 @@ vps:
 | Tunnel drops every few minutes | ISP or modem killing idle connections | `ServerAliveInterval=15` should prevent this; lower if needed |
 | Tunnel up but port not bound | Previous tunnel still holding the port | Kill stale SSH processes on VPS: `pkill -f "sshd.*2222"` |
 | High latency through tunnel | Double hop (you → VPS → laptop) | Expected — typically adds 20-50ms depending on VPS location |
+| Task starts and immediately exits (code 1) | S4U logon type has no network credentials | Use SYSTEM principal (see `install-service.ps1`) |
+| `UNPROTECTED PRIVATE KEY FILE` | Key permissions too open for SYSTEM | Run `install-service.ps1` — it copies the key with restricted ACLs |
+| PowerShell parse error under Task Scheduler | Script has LF line endings or backtick continuations | Avoid backtick `\`` continuations; use splatting and ensure UTF-8 BOM encoding |
 
 ---
 
